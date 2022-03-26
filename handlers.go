@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 )
 
 // Handles POST requests from servers making themselves known
@@ -26,9 +27,15 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ping.Time = time.Now()
+	ping.Expire = ping.Time.Add(TTL_INSTANCES)
+
 	// Update cache with this instance
-	UpdateInstance(&ping)
-	w.Write([]byte("Message received"))
+	if UpdateInstance(ping) {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 }
 
 // Should be used internally, clients shouldn't have to be aware of the services

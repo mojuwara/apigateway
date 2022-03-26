@@ -2,44 +2,38 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"math/rand"
 	"time"
 )
 
-// Key is in the format "<service>:<addr>"
+// Key is in the format "service:<service_name>"
 // All instances of a service will have the same "<service>" prefix for scanning
-func CreateInstanceKey(inst *Instance) string {
-	return fmt.Sprintf("%s:%s", inst.Service, inst.Addr)
+func CreateServiceKey(service string) string {
+	return fmt.Sprintf("service:%s", service)
 }
 
-// Waits for data to be pushed in InstanceChannel adn then updates the cache
-// TODO: How to handle key not being inserted
-func UpdateInstance(inst *Instance) bool {
-	ctx := context.Background()
-
-	key := CreateInstanceKey(inst)
-	exists := rdb.Exists(ctx, key).Val()
-
-	// Insert key if new, otherwise reset its TTL
-	if exists == 1 {
-		err := rdb.Expire(ctx, key, TTL_INSTANCES).Err()
-		if err != nil {
-			logger.Println("Error extending the lifetime of key:", key, ". Err:", err)
-			return false
-		} else {
-			logger.Println("Successfully extended the lifetime of key:", key)
-			return true
-		}
+// Create/update set of instances for this service
+func UpdateInstance(inst Instance) bool {
+	// Encode the instance for storage
+	bytes, err := json.Marshal(inst)
+	if err != nil {
+		logger.Printf("Error encoding instance '%s' for service '%s'. Err: %s", inst.Addr, inst.Service, err)
+		return false
 	} else {
-		err := rdb.Set(ctx, key, inst.Addr, TTL_INSTANCES).Err()
-		if err != nil {
-			logger.Println("Error inserting key", key, "into Redis:", err)
-			return false
-		} else {
-			logger.Println("Successfully inserted key", key, "into Redis")
-			return true
-		}
+		logger.Println("Marshalled", bytes)
+	}
+
+	ctx := context.Background()
+	key := CreateServiceKey(inst.Service)
+
+	err = rdb.SAdd(ctx, key, bytes).Err()
+	if err != nil {
+		logger.Printf("Error adding instance '%s' for service '%s' into Redis. Err: %s", inst.Addr, inst.Service, err)
+		return false
+	} else {
+		logger.Printf("Successfully added instance '%s' for service '%s' into Redis", inst.Addr, inst.Service)
+		return true
 	}
 }
 
@@ -48,95 +42,29 @@ func UpdateInstance(inst *Instance) bool {
 func GetInstance(service string) string {
 	logger.Println("Getting a random instance of service:", service)
 
-	// First check if there's a cached list of instances for this service
-	instance := getCachedInstances(service)
-	if instance != "" {
-		return removePrefix(service, instance)
-	}
-
-	// Scan Redis for instances if none cached, and then cache them
-	allInstances := scanInstances(service)
-	if len(allInstances) == 0 {
-		logger.Println("Unable to find instance of service:", service)
-		return ""
-	}
-
-	// Store instances in a Redis set for fast retrieval later
 	ctx := context.Background()
-	err := rdb.SAdd(ctx, service, allInstances).Err()
-	if err != nil {
-		logger.Println("Error caching instances of service:", service, err)
-		return getRandomInstance(service, allInstances)
-	}
+	key := CreateServiceKey(service)
 
-	// Have this cache expire in 1min so it doesn't get too stale
-	err = rdb.Expire(ctx, service, time.Minute).Err()
-	if err != nil {
-		logger.Println("Error while trying to set expire time for key:", service, err)
-		rdb.Del(ctx, service)
-	}
+	for rdb.SCard(ctx, key).Val() > 0 {
+		marshalledInst, _ := rdb.SRandMember(ctx, key).Result()
+		instance := unmarshalInstance(marshalledInst)
 
-	// Finally return a random instance
-	instance = getRandomInstance(service, allInstances)
-	logger.Println("Found random instance for service:", service, "instance:", instance)
-	return instance
-}
-
-// Scan Redis keys and find all instances for given service
-func scanInstances(service string) []string {
-	ctx := context.Background()
-	prefix := service + ":*" // "service_name:*"
-	allKeys := []string{}
-
-	for {
-		var cursor uint64
-		keys, cursor, err := rdb.Scan(ctx, cursor, prefix, 0).Result()
-		if err != nil {
-			logger.Println("Error while scanning Redis for prefix:", prefix, err)
-			break
-		}
-
-		allKeys = append(allKeys, keys...)
-
-		if cursor == 0 {
-			break
-		}
-	}
-	return allKeys
-}
-
-// Find instances of given service from previous scans, if any are active
-func getCachedInstances(service string) string {
-	// Return if it isn't cached
-	ctx := context.Background()
-	if rdb.Exists(ctx, service).Val() == 0 {
-		return ""
-	}
-
-	// Return first random instance of this service in our cache
-	// Remove it from the cache if its no longer in Redis(hasn't pings)
-	// Or return empty string when the length of the cache is 0
-	for {
-		instance, _ := rdb.SRandMember(ctx, service).Result()
-		if rdb.Exists(ctx, instance).Val() == 1 {
-			return instance
+		// If it is currently past the expire time, remove from set
+		if time.Now().After(instance.Expire) {
+			logger.Printf("Removing '%s' instance from service '%s'. It expired at %s\n", instance.Addr, instance.Service, instance.Expire)
+			rdb.SRem(ctx, key, marshalledInst)
 		} else {
-			rdb.SRem(ctx, service, instance)
-		}
-
-		if rdb.SCard(ctx, instance).Val() == 0 {
-			return ""
+			logger.Printf("Chose '%s' as random instance for service '%s'\n", instance.Addr, instance.Service)
+			return instance.Addr
 		}
 	}
+
+	logger.Printf("No instances available for requested service '%s'\n", service)
+	return ""
 }
 
-// Return a random instance
-func getRandomInstance(service string, allInstances []string) string {
-	instance := allInstances[rand.Intn(len(allInstances))]
-	return removePrefix(service, instance)
-}
-
-// Remove the "<service_name>:" prefix
-func removePrefix(service string, instance string) string {
-	return instance[len(service)+1:]
+func unmarshalInstance(instStr string) Instance {
+	var inst Instance
+	json.Unmarshal([]byte(instStr), &inst)
+	return inst
 }

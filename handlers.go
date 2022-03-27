@@ -30,8 +30,8 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	ping.Time = time.Now()
 	ping.Expire = ping.Time.Add(TTL_INSTANCES)
 
-	// Update cache with this instance
-	if UpdateInstance(ping) {
+	// Keep track of this instance
+	if UpdateInstance(&ping) {
 		w.WriteHeader(http.StatusOK)
 	} else {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -41,7 +41,7 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 // Should be used internally, clients shouldn't have to be aware of the services
 // Returns an addr(string) of an instance of the given service
 // URL should be "service/?name=<service_name>"
-func serviceHandler(w http.ResponseWriter, r *http.Request) {
+func discoveryHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	service := query.Get("name")
 	if service == "" {
@@ -54,7 +54,7 @@ func serviceHandler(w http.ResponseWriter, r *http.Request) {
 	host := GetInstance(service)
 	if host == "" {
 		w.Write([]byte("There are no instances currently running for this service."))
+	} else {
+		w.Write([]byte(host))
 	}
-
-	w.Write([]byte(host))
 }

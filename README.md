@@ -1,7 +1,10 @@
 # API Gateway
 
 ### Possible Implementations:
-- `(Winner) Each instance is a key(<service>:<instance>)`
+- `(Winner) Each service is a hash where the fields are hosts and the keys are expire times`
+	- Cons:
+		- Have to check the expire time whenever we pull from the hash
+- `Each instance is a key(<service>:<instance>)`
 	- When a service is selected, it scan the key space
 	- Pros:
 		- Can use Redis built-in expire to auto-remove

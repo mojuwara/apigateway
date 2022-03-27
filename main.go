@@ -10,7 +10,7 @@ func main() {
 	initRedis()
 
 	http.HandleFunc("/ping", pingHandler)
-	http.HandleFunc("/service", serviceHandler)
+	http.HandleFunc("/discover", discoveryHandler)
 
 	log.Fatal(http.ListenAndServe(":5678", nil))
 }

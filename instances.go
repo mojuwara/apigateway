@@ -1,64 +1,94 @@
 package main
 
 import (
-	"context"
-	"fmt"
+	"sync"
 	"time"
 )
 
-func CreateServiceKey(service string) string {
-	return fmt.Sprintf("service:%s", service)
+// Lock around the instCache
+var instLock sync.RWMutex
+
+/*
+Cache for Instances, mapping service manes to their instances
+
+instances = {
+	"service_name": {
+		Instance: true,...
+	},
+}
+*/
+var instanceCache map[string]map[Instance]bool
+
+func initInstanceCache() {
+	instanceCache = make(map[string]map[Instance]bool)
+	logger.Println("Initialized the cache for instances")
 }
 
-// Each service will have its own map/hash "service:<service_name>"
-// The fields in the map will be <host_name> and the values will be <expire_time>
-func UpdateInstance(inst *Instance) bool {
-	ctx := context.Background()
+func getInstance(service string) (Instance, bool) {
+	var instance Instance
 
-	key := CreateServiceKey(inst.Service)
-	field := inst.Addr
-	value, _ := inst.Expire.MarshalText()
+	//////////////////////////////////////////////////////////////////
+	instLock.RLock()
 
-	_, err := rdb.HSet(ctx, key, field, value).Result()
-	if err != nil {
-		logger.Printf("Error while storing instance: '%s', expire: '%s' in key: '%s'. Err: %s\n", field, inst.Expire, key, err)
-		return false
+	instanceGroup, ok := instanceCache[service]
+	if ok {
+		instance, ok = getRandomInstance(instanceGroup)
+	}
+
+	instLock.RUnlock()
+	//////////////////////////////////////////////////////////////////
+
+	if ok {
+		logger.Printf("Instance '%s' randomly chosen for service: '%s'\n", instance.Addr, service)
+		return instance, true
 	} else {
-		logger.Printf("Successfully stored instance: '%s', expire: '%s' in key: '%s'\n", field, inst.Expire, key)
-		return true
+		logger.Printf("No available instances for service: '%s'\n", service)
+		return instance, false
 	}
 }
 
-// Given a service name, will return a random instance/host if any are known
-func GetInstance(service string) string {
-	// Number of random hosts to try to fetch from Redis
-	const NumHostsToFetch = 5
-
-	ctx := context.Background()
-	key := CreateServiceKey(service)
-
-	// While there are still fields in the hash
-	for rdb.HLen(ctx, key).Val() > 0 {
-		fields, _ := rdb.HRandField(ctx, key, NumHostsToFetch, true).Result()
-
-		for i := 0; i < len(fields); {
-			field := fields[i]   // Current element is the field
-			value := fields[i+1] // Next element is its value
-
-			// Return current host if hasn't expired
-			var expireTime time.Time
-			expireTime.UnmarshalText([]byte(value))
-			if expireTime.After(time.Now()) {
-				logger.Printf("Returning '%s' as random instance for service: '%s'", field, service)
-				return field
-			}
-
-			// Remove the current host from hash since it has expired and try next pair
-			rdb.HDel(ctx, key, field)
-			i += 2
+// Find a random instance that is not expired yet
+func getRandomInstance(instanceGroup map[Instance]bool) (Instance, bool) {
+	for instance := range instanceGroup {
+		if instance.Expire.After(time.Now()) {
+			return instance, true
+		} else {
+			delete(instanceGroup, instance)
 		}
 	}
+	return Instance{}, false
+}
 
-	logger.Println("No instances for requested service:", service)
-	return ""
+func registerInstance(instance Instance) bool {
+	//////////////////////////////////////////////////////////////////
+	instLock.Lock()
+
+	instanceGroup, ok := instanceCache[instance.Service]
+	if !ok {
+		instanceCache[instance.Service] = make(map[Instance]bool)
+	}
+	instanceGroup[instance] = true
+
+	instLock.Unlock()
+	//////////////////////////////////////////////////////////////////
+
+	logger.Printf("Successfully cached instance '%s' for service '%s':", instance.Addr, instance.Service)
+	return true
+}
+
+// TODO: If service says its not available for a certain service
+func unregisterInstance(instance Instance) bool {
+	//////////////////////////////////////////////////////////////////
+	instLock.Lock()
+
+	instanceGroup, ok := instanceCache[instance.Service]
+	if ok {
+		delete(instanceGroup, instance)
+	}
+
+	instLock.Unlock()
+	//////////////////////////////////////////////////////////////////
+
+	logger.Printf("Successfully cached instance '%s' for service '%s':", instance.Addr, instance.Service)
+	return true
 }

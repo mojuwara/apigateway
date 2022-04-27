@@ -6,11 +6,21 @@ import (
 )
 
 func main() {
-	// Initialize connection with Redis server
-	initRedis()
+	// Initialize the Cache for instances
+	initInstanceCache()
 
-	http.HandleFunc("/ping", pingHandler)
+	// Initialize the cache for responses
+	initResponseCache()
+
+	// Create a handler for the configured endpoints
+	// initConfigEndpoints()
+
+	http.HandleFunc("/register", register)
+	http.HandleFunc("/unregister", unregister)
 	http.HandleFunc("/discover", discoveryHandler)
+
+	// Handles all other requests made by clients and other services
+	http.HandleFunc("/", genericHandler)
 
 	log.Fatal(http.ListenAndServe(":5678", nil))
 }
